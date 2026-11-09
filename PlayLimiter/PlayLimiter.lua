@@ -1,6 +1,6 @@
 --------------------------------------------------------------------------
 -- PlayLimiter
--- Session time limits (separate weekday / weekend) with annoying puzzles
+-- Daily play time limits (separate weekday / weekend) with annoying puzzles
 -- that must be solved to earn extra time.
 --------------------------------------------------------------------------
 
@@ -18,13 +18,12 @@ local warned = {}
 local BuildSettings   -- defined near the bottom
 
 local defaults = {
-    weekdayMinutes  = 120,  -- Mon-Fri session limit (0 = no limit)
-    weekendMinutes  = 240,  -- Sat-Sun session limit (0 = no limit)
+    weekdayMinutes  = 120,  -- Mon-Fri daily limit (0 = no limit)
+    weekendMinutes  = 240,  -- Sat-Sun daily limit (0 = no limit)
     puzzlesRequired = 3,    -- puzzles in a row needed to earn more time
     bonusMinutes    = 15,   -- extra time granted per completed challenge
-    breakMinutes    = 30,   -- logged out at least this long = new session
     showTimer       = true,
-    session         = { elapsed = 0, bonusSec = 0, lastSeen = 0 },
+    session         = { elapsed = 0, bonusSec = 0, day = "" },  -- resets only when the date changes
 }
 
 local function Print(msg)
@@ -56,6 +55,20 @@ local function IsWeekend()
     return wday == 1 or wday == 7
 end
 
+local function Today()
+    return date("%Y-%m-%d")
+end
+
+-- Starts a fresh day's allowance when the calendar date changes
+-- (at login, or at midnight while playing). Returns true if it reset.
+local function EnsureToday()
+    local s, today = DB.session, Today()
+    if s.day == today then return false end
+    s.day, s.elapsed, s.bonusSec = today, 0, 0
+    wipe(warned)
+    return true
+end
+
 local function BaseLimitSec()
     local m = IsWeekend() and DB.weekendMinutes or DB.weekdayMinutes
     if not m or m <= 0 then return nil end
@@ -72,6 +85,17 @@ end
 -- Challenge flow
 --------------------------------------------------------------------------
 local NextPuzzle   -- forward declaration
+local logoutHidePending = false
+
+-- The logout button is a secure frame: it can only be shown/hidden out of combat.
+local function SetLogoutShown(show)
+    if InCombatLockdown() then
+        logoutHidePending = not show
+        return
+    end
+    logoutHidePending = false
+    panel.logout:SetShown(show)
+end
 
 local function FinishChallenge()
     puzzleActive = false
@@ -79,6 +103,7 @@ local function FinishChallenge()
     combatNotified = false
     currentToken = currentToken + 1
     overlay:Hide()
+    SetLogoutShown(false)
     local fn = onSuccess
     onSuccess = nil
     if fn then fn() end
@@ -113,6 +138,7 @@ local function StartChallenge(title, successFn)
     lastKind = nil
     panel.title:SetText(title)
     overlay:Show()
+    SetLogoutShown(true)
     NextPuzzle()
 end
 
@@ -221,18 +247,35 @@ local function BuildUI()
     panel.submit:SetText("Submit")
     panel.submit:SetScript("OnClick", SubmitInput)
 
+    -- Wordle guess history (left column)
+    panel.board = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    panel.board:SetPoint("TOPLEFT", 40, -112)
+    panel.board:SetWidth(130)
+    panel.board:SetJustifyH("LEFT")
+    panel.board:SetJustifyV("TOP")
+    panel.board:SetSpacing(4)
+    panel.board:Hide()
+
     panel.status = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     panel.status:SetPoint("BOTTOM", 0, 50)
     panel.status:SetWidth(490)
 
-    panel.logout = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+    -- Logout() is a protected function, so addon code can't call it directly
+    -- (that's what produced "action was prevented"). A secure action button
+    -- running a /logout macro counts as the player's own click and is allowed.
+    -- It's parented/anchored to UIParent rather than the overlay so hiding the
+    -- overlay never touches a protected frame during combat.
+    panel.logout = CreateFrame("Button", "PlayLimiterLogoutButton", UIParent,
+        "SecureActionButtonTemplate, UIPanelButtonTemplate")
     panel.logout:SetSize(190, 24)
-    panel.logout:SetPoint("BOTTOM", 0, 14)
+    panel.logout:SetPoint("BOTTOM", UIParent, "CENTER", 0, -170 + 14)  -- bottom of the panel
+    panel.logout:SetFrameStrata("FULLSCREEN_DIALOG")
+    panel.logout:SetFrameLevel(150)
     panel.logout:SetText("Never mind, log out")
-    panel.logout:SetScript("OnClick", function()
-        local ok = pcall(Logout)
-        if not ok then Print("Could not log out automatically.") end
-    end)
+    panel.logout:RegisterForClicks("AnyUp", "AnyDown")
+    panel.logout:SetAttribute("type", "macro")
+    panel.logout:SetAttribute("macrotext", "/logout")
+    panel.logout:Hide()
 
     -- Memory-game buttons
     panel.simon = {}
@@ -262,6 +305,8 @@ local function ResetWidgets()
     panel.input:Hide()
     panel.submit:Hide()
     panel.jump:Hide()
+    panel.board:SetText("")
+    panel.board:Hide()
     panel.display:SetText("")
     panel.status:SetText("")
     panel.prompt:SetText("")
@@ -288,31 +333,39 @@ local puzzles = {}
 
 -- 1. Mental arithmetic
 puzzles.math = function()
-    local a, b, c, d = random(6, 19), random(3, 9), random(10, 99), random(5, 50)
-    local ans = a * b + c - d
-    panel.prompt:SetText("Solve this. No addons, no calculator. Just you and your brain.")
-    panel.display:SetText(string.format("(%d x %d) + %d - %d = ?", a, b, c, d))
+    -- One easy step, friendly numbers (5s and 10s only).
+    local ans, question
+    local kind = random(3)
+    if kind == 1 then
+        local a, b = (random(2) == 1) and 5 or 10, random(2, 9)   -- e.g. 5 x 6
+        ans, question = a * b, string.format("%d x %d = ?", a, b)
+    elseif kind == 2 then
+        local a, b = 10 * random(1, 9), 5 * random(1, 10)          -- e.g. 40 + 25
+        ans, question = a + b, string.format("%d + %d = ?", a, b)
+    else
+        local a = 10 * random(5, 10)                               -- 50 .. 100
+        local b = 5 * random(1, 9)                                 -- 5 .. 45
+        ans, question = a - b, string.format("%d - %d = ?", a, b)
+    end
+    panel.prompt:SetText("Quick one! No calculator.")
+    panel.display:SetText(question)
     ShowInput(function(text)
         if tonumber(text) == ans then PuzzleSolved() else PuzzleFailed() end
     end)
 end
 
--- 2. Memorize a code that vanishes, type it backwards
+-- 2. Memorize a 4-digit code that vanishes, then type it
 puzzles.memory = function()
-    local chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     local code = ""
-    for _ = 1, 6 do
-        local k = random(#chars)
-        code = code .. chars:sub(k, k)
-    end
+    for _ = 1, 4 do code = code .. random(0, 9) end
     local token = currentToken
-    panel.prompt:SetText("Memorize this code. It vanishes in 4 seconds. Then type it BACKWARDS.")
+    panel.prompt:SetText("Memorize this code. It vanishes in 4 seconds. Then type it in.")
     panel.display:SetText(code)
     C_Timer.After(4, function()
         if token ~= currentToken then return end
-        panel.display:SetText("??????")
+        panel.display:SetText("? ? ? ?")
         ShowInput(function(text)
-            if strupper(strtrim(text)) == code:reverse() then PuzzleSolved() else PuzzleFailed() end
+            if (text:gsub("%s", "")) == code then PuzzleSolved() else PuzzleFailed() end
         end)
     end)
 end
@@ -354,29 +407,69 @@ puzzles.simon = function()
     end)
 end
 
--- 4. Unscramble a word
+-- 4. Wordle: guess the 5-letter word, unlimited guesses
 local words = {
-    "STORMWIND", "ONYXIA", "GNOMEREGAN", "DEADMINES", "HEARTHSTONE",
-    "ORGRIMMAR", "THUNDERFURY", "MOLTENCORE", "WARSONG", "ARATHI",
-    "STRATHOLME", "BLACKROCK", "SHATTRATH", "DARNASSUS", "UNDERCITY",
+    "GNOME", "TROLL", "DWARF", "HORDE", "ROGUE", "QUEST", "DRAKE", "TOTEM",
+    "SPELL", "MOUNT", "ARMOR", "BLADE", "STAFF", "FLASK", "GUILD", "FEAST",
+    "BEAST", "CHEST", "CLOTH", "PLATE", "GHOST", "DEMON", "SKULL", "CROWN",
+    "TOWER", "STORM", "FLAME", "FROST", "HONOR", "MAGIC", "SWORD", "SMITE",
 }
-puzzles.scramble = function()
-    local word = words[random(#words)]
-    local scrambled
-    repeat
-        local t = {}
-        for ch in word:gmatch(".") do t[#t + 1] = ch end
-        for i = #t, 2, -1 do
-            local j = random(i)
-            t[i], t[j] = t[j], t[i]
+local GREEN, YELLOW, GREY = "ff6aaa64", "ffc9b458", "ff808080"
+
+-- Returns the guess as colored letters, Wordle-style (handles repeated letters).
+local function ScoreGuess(guess, answer)
+    local colors, left = {}, {}
+    for i = 1, 5 do
+        local a = answer:sub(i, i)
+        if guess:sub(i, i) == a then
+            colors[i] = GREEN
+        else
+            left[a] = (left[a] or 0) + 1
         end
-        scrambled = table.concat(t)
-    until scrambled ~= word
-    panel.prompt:SetText("Unscramble this WoW-related word:")
-    panel.display:SetText(scrambled)
-    ShowInput(function(text)
-        if strupper(strtrim(text)) == word then PuzzleSolved() else PuzzleFailed() end
-    end)
+    end
+    for i = 1, 5 do
+        if not colors[i] then
+            local g = guess:sub(i, i)
+            if (left[g] or 0) > 0 then
+                colors[i], left[g] = YELLOW, left[g] - 1
+            else
+                colors[i] = GREY
+            end
+        end
+    end
+    local out = {}
+    for i = 1, 5 do out[i] = "|c" .. colors[i] .. guess:sub(i, i) .. "|r" end
+    return table.concat(out, " ")
+end
+
+puzzles.wordle = function()
+    local answer = words[random(#words)]
+    local history = {}
+    panel.prompt:SetText("Guess the 5-letter word. Unlimited guesses!\n" ..
+        "|c" .. GREEN .. "Green|r = right spot,  |c" .. YELLOW .. "yellow|r = wrong spot,  " ..
+        "|c" .. GREY .. "grey|r = not in the word.")
+    panel.display:SetText("_ _ _ _ _")
+    panel.board:Show()
+    local function Guess(text)
+        local guess = strupper(strtrim(text))
+        if not guess:match("^%a%a%a%a%a$") then
+            panel.status:SetText("Please type exactly 5 letters.")
+            ShowInput(Guess)
+            return
+        end
+        panel.status:SetText("")
+        history[#history + 1] = ScoreGuess(guess, answer)
+        -- Show the most recent 6 guesses
+        local first = math.max(1, #history - 5)
+        panel.board:SetText(table.concat(history, "\n", first))
+        panel.display:SetText("Guess " .. (#history + 1))
+        if guess == answer then
+            PuzzleSolved()
+        else
+            ShowInput(Guess)
+        end
+    end
+    ShowInput(Guess)
 end
 
 -- 5. Runaway button
@@ -411,7 +504,7 @@ puzzles.jump = function()
     C_Timer.After(0.9, Wander)
 end
 
-local order = { "math", "memory", "simon", "scramble", "jump" }
+local order = { "math", "memory", "simon", "wordle", "jump" }
 
 NextPuzzle = function()
     if not puzzleActive then return end
@@ -489,7 +582,7 @@ local function CheckLimit()
             for _, t2 in ipairs(WARN_AT) do
                 if t2 >= t then warned[t2] = true end
             end
-            local msg = string.format("%d minute(s) of play time left this session.", math.ceil(rem / 60))
+            local msg = string.format("%d minute(s) of play time left today.", math.ceil(rem / 60))
             Print(msg)
             if UIErrorsFrame then UIErrorsFrame:AddMessage(msg, 1, 0.5, 0.1, 1) end
             if SOUNDKIT and SOUNDKIT.RAID_WARNING then PlaySound(SOUNDKIT.RAID_WARNING) end
@@ -506,10 +599,10 @@ loop:SetScript("OnUpdate", function(_, dt)
     if acc < 0.5 then return end
     local step = acc
     acc = 0
+    if EnsureToday() then Print("It's a new day. Your play time has been reset.") end
     if not puzzleActive then
         DB.session.elapsed = DB.session.elapsed + step
     end
-    DB.session.lastSeen = time()
     UpdateTimerText()
     CheckLimit()
 end)
@@ -520,7 +613,6 @@ end)
 local events = CreateFrame("Frame")
 events:RegisterEvent("ADDON_LOADED")
 events:RegisterEvent("PLAYER_LOGIN")
-events:RegisterEvent("PLAYER_LOGOUT")
 events:RegisterEvent("PLAYER_REGEN_ENABLED")
 events:SetScript("OnEvent", function(_, event, arg1)
     if event == "ADDON_LOADED" and arg1 == "PlayLimiter" then
@@ -532,21 +624,16 @@ events:SetScript("OnEvent", function(_, event, arg1)
         BuildUI()
         BuildTimer()
         BuildSettings()
-        local s = DB.session
-        local now = time()
-        if s.lastSeen == 0 or (now - s.lastSeen) > DB.breakMinutes * 60 then
-            s.elapsed, s.bonusSec = 0, 0
-            Print("New play session started. Type /pl to open settings.")
+        DB.breakMinutes, DB.session.lastSeen = nil, nil   -- old settings, no longer used
+        if EnsureToday() then
+            Print("New day, fresh play time. Type /pl to open settings.")
         else
-            Print("Resuming your session (" .. FormatTime(s.elapsed) .. " played so far).")
+            Print("Welcome back. " .. FormatTime(DB.session.elapsed) .. " played so far today.")
         end
-        s.lastSeen = now
         ready = true
 
-    elseif event == "PLAYER_LOGOUT" then
-        if DB then DB.session.lastSeen = time() end
-
     elseif event == "PLAYER_REGEN_ENABLED" then
+        if logoutHidePending and not puzzleActive then SetLogoutShown(false) end
         if pendingChallenge and not puzzleActive then
             local title = panel.pendingTitle or "Time's up!"
             pendingChallenge = false
@@ -557,29 +644,19 @@ end)
 
 --------------------------------------------------------------------------
 -- Settings panel (Options > AddOns > Play Limiter)
---
--- Making things EASIER (higher time limit, fewer puzzles, bigger bonus,
--- shorter break) requires passing the puzzle challenge first.
--- Making things STRICTER is always free.
+-- Clicking Save applies changes immediately.
 --------------------------------------------------------------------------
 local settingsPanel, settingsCategory
 
 local FIELDS = {
-    { key = "weekdayMinutes",  label = "Weekday session limit (minutes)",
-      hint = "Monday to Friday. 0 = no limit.",
-      loosen = function(old, new) return old > 0 and (new == 0 or new > old) end },
-    { key = "weekendMinutes",  label = "Weekend session limit (minutes)",
-      hint = "Saturday and Sunday. 0 = no limit.",
-      loosen = function(old, new) return old > 0 and (new == 0 or new > old) end },
+    { key = "weekdayMinutes",  label = "Weekday daily limit (minutes)",
+      hint = "Monday to Friday. 0 = no limit." },
+    { key = "weekendMinutes",  label = "Weekend daily limit (minutes)",
+      hint = "Saturday and Sunday. 0 = no limit." },
     { key = "puzzlesRequired", label = "Puzzles required per challenge", min = 1,
-      hint = "Puzzles in a row needed to earn more time.",
-      loosen = function(old, new) return new < old end },
+      hint = "Puzzles in a row needed to earn more time." },
     { key = "bonusMinutes",    label = "Minutes earned per challenge", min = 1,
-      hint = "Extra play time granted when you pass.",
-      loosen = function(old, new) return new > old end },
-    { key = "breakMinutes",    label = "Break that starts a new session (minutes)", min = 0,
-      hint = "Time logged out before your session counter resets.",
-      loosen = function(old, new) return new < old end },
+      hint = "Extra play time granted when you pass." },
 }
 
 local function RefreshSettings()
@@ -595,44 +672,26 @@ local function UpdateSettingsStatus()
     if not settingsPanel or not DB then return end
     local rem = RemainingSec()
     settingsPanel.status:SetText(string.format(
-        "Today is a %s.   Played this session: %s.   Remaining: %s.",
+        "Today is a %s.   Played today: %s.   Remaining: %s.",
         IsWeekend() and "weekend" or "weekday",
         FormatTime(DB.session.elapsed),
         rem and FormatTime(rem) or "unlimited"))
 end
 
 local function ApplySettings()
-    if puzzleActive or pendingChallenge then
-        Print("Finish the current challenge first.")
-        return
-    end
-    local new, loosening = {}, false
     for _, f in ipairs(FIELDS) do
         local n = tonumber(f.edit:GetText())
         if not n then n = DB[f.key] end
         n = math.floor(n)
         if n < 0 then n = 0 end
         if f.min and n < f.min then n = f.min end
-        new[f.key] = n
-        if n ~= DB[f.key] and f.loosen(DB[f.key], n) then loosening = true end
+        DB[f.key] = n
     end
-    local showTimer = settingsPanel.showTimer:GetChecked() and true or false
-
-    local function commit()
-        for k, v in pairs(new) do DB[k] = v end
-        DB.showTimer = showTimer
-        if timerFrame then timerFrame:SetShown(showTimer) end
-        RefreshSettings()
-        UpdateSettingsStatus()
-        Print("Settings saved.")
-    end
-
-    if loosening then
-        Print("That loosens your limits. Solve the puzzles to confirm.")
-        RequestChallenge("Loosening your limits? Earn it.", commit)
-    else
-        commit()
-    end
+    DB.showTimer = settingsPanel.showTimer:GetChecked() and true or false
+    if timerFrame then timerFrame:SetShown(DB.showTimer) end
+    RefreshSettings()
+    UpdateSettingsStatus()
+    Print("Settings saved.")
 end
 
 BuildSettings = function()
@@ -648,9 +707,8 @@ BuildSettings = function()
     sub:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -8)
     sub:SetWidth(560)
     sub:SetJustifyH("LEFT")
-    sub:SetText("Set how long a play session may last on weekdays and weekends. When time runs out, " ..
-        "you must solve puzzles to keep playing. Loosening a limit also requires solving the puzzles; " ..
-        "tightening one is free. Click Save to apply your changes.")
+    sub:SetText("Set how much you can play per day on weekdays and weekends. Play time resets at midnight. When time runs out, " ..
+        "you must solve puzzles to keep playing. Click Save to apply your changes.")
 
     p.status = p:CreateFontString(nil, "ARTWORK", "GameFontNormal")
     p.status:SetPoint("TOPLEFT", sub, "BOTTOMLEFT", 0, -12)
