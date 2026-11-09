@@ -1,0 +1,9 @@
+## Interface: 16001
+## Title: Play Limiter
+## Notes: Session time limits (weekday/weekend) with annoying puzzles to earn extra time.
+## Author: You
+## IconTexture: Interface\Icons\INV_Misc_PocketWatch_01
+## Version: 1.1.0
+## SavedVariables: PlayLimiterDB
+
+PlayLimiter.lua
