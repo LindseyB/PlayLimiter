@@ -5,5 +5,8 @@
 ## IconTexture: Interface\Icons\INV_Misc_PocketWatch_01
 ## Version: 1.1.0
 ## SavedVariables: PlayLimiterDB
+## AddonCompartmentFunc: PlayLimiter_OnAddonCompartmentClick
+## AddonCompartmentFuncOnEnter: PlayLimiter_OnAddonCompartmentEnter
+## AddonCompartmentFuncOnLeave: PlayLimiter_OnAddonCompartmentLeave
 
 PlayLimiter.lua

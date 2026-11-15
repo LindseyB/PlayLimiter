@@ -856,3 +856,26 @@ SLASH_PLAYLIMITER2 = "/pl"
 SlashCmdList["PLAYLIMITER"] = function()
     if ready then OpenSettings() end
 end
+
+--------------------------------------------------------------------------
+-- Addon compartment (the addon menu button by the minimap).
+-- These globals are named in the .toc's AddonCompartmentFunc* fields.
+--------------------------------------------------------------------------
+function PlayLimiter_OnAddonCompartmentClick()
+    if ready then OpenSettings() end
+end
+
+function PlayLimiter_OnAddonCompartmentEnter(_, menuButton)
+    if not ready then return end
+    GameTooltip:SetOwner(menuButton, "ANCHOR_LEFT")
+    GameTooltip:SetText("Play Limiter")
+    local rem = RemainingSec()
+    GameTooltip:AddLine("Played today: " .. FormatTime(DB.session.elapsed), 1, 1, 1)
+    GameTooltip:AddLine("Remaining: " .. (rem and FormatTime(rem) or "unlimited"), 1, 1, 1)
+    GameTooltip:AddLine("Click to open settings.", 0.6, 0.6, 0.6)
+    GameTooltip:Show()
+end
+
+function PlayLimiter_OnAddonCompartmentLeave()
+    GameTooltip:Hide()
+end

@@ -62,7 +62,7 @@ Each challenge picks puzzles at random, never the same kind twice in a row.
 
 ## Usage
 
-Open the settings with `/pl` or `/playlimit`, or go to **Game Menu > Options > AddOns > Play Limiter**.
+Open the settings with `/pl` or `/playlimit`, by clicking **Play Limiter** in the addon menu button next to the minimap (hover it to see today's played and remaining time), or go to **Game Menu > Options > AddOns > Play Limiter**.
 
 | Setting | Default | Description |
 | --- | --- | --- |
