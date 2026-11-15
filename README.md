@@ -2,7 +2,7 @@
 
 A World of Warcraft addon (built for WoW Classic / Anniversary, interface `16001`) that limits my playtime like a normal person.
 
-You set how much you can play per day on weekdays and weekends. When the time runs out, a full-screen overlay blocks the game until you solve a run of annoying puzzles to earn a bit more time, or you give up and log out.
+You set how much you can play per day on weekdays and weekends. When the time runs out, a full-screen overlay blocks the game and asks whether you want to **Begin Challenges** (solve a run of annoying puzzles to earn a bit more time) or **Logout**.
 
 ![Settings panel](screenshots/Wow_YcK1yNNHIV.png)
 
@@ -12,8 +12,9 @@ You set how much you can play per day on weekdays and weekends. When the time ru
 - **Resets at midnight.** Play time is tracked per calendar day. Logging out and back in on the same day picks up where you left off. If you are still playing when the date changes, your time resets right away.
 - **On-screen countdown timer.** Shows how much time is left today. It turns orange at 5 minutes and red at 1 minute. Shift+drag to move it.
 - **Warnings** at 10, 5 and 1 minute remaining, with a chat message, an on-screen alert and a raid-warning sound.
-- **Puzzle challenge when time is up.** Solve several puzzles in a row (3 by default) to earn extra minutes (15 by default). A wrong answer resets your streak to zero.
-- **Combat-safe.** If the limit is reached mid-fight, the challenge waits until combat ends.
+- **Begin Challenges / Logout prompt when time is up.** A large box in the middle of the screen offers two buttons. **Logout** logs you out straight away. **Begin Challenges** starts the puzzles.
+- **Puzzle challenge.** Solve several puzzles in a row (3 by default) to earn extra minutes (15 by default). A wrong answer resets your streak to zero.
+- **Combat-safe.** The prompt never appears during combat. If the limit is reached mid-fight, it waits until combat ends.
 - **"Never mind, log out" button** on the challenge screen if you would rather just stop. It uses a secure `/logout` macro button, so the game does not block it.
 
 ## Puzzles
@@ -77,7 +78,8 @@ The settings panel also shows whether today counts as a weekday or weekend, how 
 
 ## How time is tracked
 
-- Time only counts while you are logged in, and it pauses while a challenge is on screen.
+- Time only counts while you are logged in, and it pauses while the prompt or a challenge is on screen.
+- Time also pauses while you are AFK (flagged automatically by the game or via `/afk`). The timer shows "(AFK, paused)" while this is happening.
 - Passing a challenge sets your remaining time to exactly the bonus amount, so going over the limit is not rewarded.
 - Settings and today's progress are saved per account in the `PlayLimiterDB` saved variable.
 

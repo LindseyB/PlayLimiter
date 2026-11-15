@@ -6,8 +6,8 @@
 
 local DB
 local ready = false
-local overlay, panel, timerFrame
-local puzzleActive = false
+local overlay, panel, prompt, timerFrame
+local puzzleActive = false     -- true from the moment the prompt appears until the challenge ends
 local pendingChallenge = false
 local combatNotified = false
 local streak = 0
@@ -85,16 +85,17 @@ end
 -- Challenge flow
 --------------------------------------------------------------------------
 local NextPuzzle   -- forward declaration
-local logoutHidePending = false
+local pendingSecureShown = {}   -- secure button -> shown state to apply once combat ends
 
--- The logout button is a secure frame: it can only be shown/hidden out of combat.
-local function SetLogoutShown(show)
+-- Logout buttons are secure frames: they can only be shown/hidden out of combat.
+-- During combat the latest requested state is remembered and applied afterwards.
+local function SetSecureShown(btn, show)
     if InCombatLockdown() then
-        logoutHidePending = not show
+        pendingSecureShown[btn] = show
         return
     end
-    logoutHidePending = false
-    panel.logout:SetShown(show)
+    pendingSecureShown[btn] = nil
+    btn:SetShown(show)
 end
 
 local function FinishChallenge()
@@ -103,7 +104,8 @@ local function FinishChallenge()
     combatNotified = false
     currentToken = currentToken + 1
     overlay:Hide()
-    SetLogoutShown(false)
+    SetSecureShown(panel.logout, false)
+    SetSecureShown(prompt.logout, false)
     local fn = onSuccess
     onSuccess = nil
     if fn then fn() end
@@ -130,6 +132,8 @@ local function PuzzleFailed(extra)
     C_Timer.After(1.5, NextPuzzle)
 end
 
+-- Shows the large "Begin Challenges / Logout" prompt. Puzzles only start
+-- once the player clicks Begin Challenges.
 local function StartChallenge(title, successFn)
     if puzzleActive then return end
     onSuccess = successFn
@@ -137,12 +141,25 @@ local function StartChallenge(title, successFn)
     streak = 0
     lastKind = nil
     panel.title:SetText(title)
+    prompt.title:SetText(title)
+    panel:Hide()
+    prompt:Show()
     overlay:Show()
-    SetLogoutShown(true)
+    SetSecureShown(panel.logout, false)
+    SetSecureShown(prompt.logout, true)
+end
+
+-- Called by the "Begin Challenges" button: swap the prompt for the puzzle panel.
+local function BeginPuzzles()
+    if not puzzleActive or panel:IsShown() then return end
+    prompt:Hide()
+    panel:Show()
+    SetSecureShown(prompt.logout, false)
+    SetSecureShown(panel.logout, true)
     NextPuzzle()
 end
 
--- Starts the challenge now, or as soon as combat ends.
+-- Shows the prompt now, or as soon as combat ends.
 local function RequestChallenge(title, successFn)
     if puzzleActive then return end
     if InCombatLockdown() or UnitAffectingCombat("player") then
@@ -151,7 +168,7 @@ local function RequestChallenge(title, successFn)
         panel.pendingTitle = title
         if not combatNotified then
             combatNotified = true
-            Print("Time limit reached. Puzzles will begin when combat ends.")
+            Print("Time limit reached. The challenge prompt will appear when combat ends.")
         end
         return
     end
@@ -297,6 +314,50 @@ local function BuildUI()
     panel.jump:SetSize(100, 32)
     panel.jump:SetText("CLICK ME")
     panel.jump:Hide()
+
+    -- "Begin Challenges / Logout" prompt shown before any puzzle starts -----
+    prompt = CreateFrame("Frame", nil, overlay)
+    prompt:SetSize(640, 340)
+    prompt:SetPoint("CENTER")
+    prompt:EnableMouse(true)
+    local qbg = prompt:CreateTexture(nil, "BACKGROUND")
+    qbg:SetAllPoints()
+    qbg:SetColorTexture(0.08, 0.06, 0.04, 1)
+    AddBorder(prompt)
+
+    prompt.title = prompt:CreateFontString(nil, "OVERLAY", "GameFontNormalHuge")
+    prompt.title:SetPoint("TOP", 0, -28)
+    prompt.title:SetWidth(600)
+
+    prompt.text = prompt:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
+    prompt.text:SetPoint("TOP", 0, -76)
+    prompt.text:SetWidth(580)
+    prompt.text:SetText("Your play time for today is used up.\n" ..
+        "Solve the puzzles to earn more time, or log out.")
+
+    prompt.begin = CreateFrame("Button", nil, prompt, "UIPanelButtonTemplate")
+    prompt.begin:SetSize(340, 60)
+    prompt.begin:SetPoint("CENTER", 0, -15)
+    prompt.begin:SetNormalFontObject("GameFontNormalHuge")
+    prompt.begin:SetHighlightFontObject("GameFontHighlightHuge")
+    prompt.begin:SetText("Begin Challenges")
+    prompt.begin:SetScript("OnClick", BeginPuzzles)
+
+    -- Secure /logout button, anchored to UIParent for the same reasons as
+    -- panel.logout above. It sits directly under the Begin button.
+    prompt.logout = CreateFrame("Button", "PlayLimiterPromptLogoutButton", UIParent,
+        "SecureActionButtonTemplate, UIPanelButtonTemplate")
+    prompt.logout:SetSize(340, 60)
+    prompt.logout:SetPoint("CENTER", UIParent, "CENTER", 0, -95)
+    prompt.logout:SetFrameStrata("FULLSCREEN_DIALOG")
+    prompt.logout:SetFrameLevel(150)
+    prompt.logout:SetNormalFontObject("GameFontNormalHuge")
+    prompt.logout:SetHighlightFontObject("GameFontHighlightHuge")
+    prompt.logout:SetText("Logout")
+    prompt.logout:RegisterForClicks("AnyUp", "AnyDown")
+    prompt.logout:SetAttribute("type", "macro")
+    prompt.logout:SetAttribute("macrotext", "/logout")
+    prompt.logout:Hide()
 end
 
 local function ResetWidgets()
@@ -558,8 +619,9 @@ local function UpdateTimerText()
     else
         local color = "ffffffff"
         if rem <= 60 then color = "ffff3333" elseif rem <= 300 then color = "ffffaa33" end
-        timerFrame.text:SetText(string.format("%s left: |c%s%s|r",
-            IsWeekend() and "Weekend" or "Weekday", color, FormatTime(rem)))
+        timerFrame.text:SetText(string.format("%s left: |c%s%s|r%s",
+            IsWeekend() and "Weekend" or "Weekday", color, FormatTime(rem),
+            UnitIsAFK("player") and " |cff999999(AFK, paused)|r" or ""))
     end
 end
 
@@ -600,7 +662,8 @@ loop:SetScript("OnUpdate", function(_, dt)
     local step = acc
     acc = 0
     if EnsureToday() then Print("It's a new day. Your play time has been reset.") end
-    if not puzzleActive then
+    -- Time pauses while the prompt/puzzles are up and while the player is AFK.
+    if not puzzleActive and not UnitIsAFK("player") then
         DB.session.elapsed = DB.session.elapsed + step
     end
     UpdateTimerText()
@@ -633,7 +696,7 @@ events:SetScript("OnEvent", function(_, event, arg1)
         ready = true
 
     elseif event == "PLAYER_REGEN_ENABLED" then
-        if logoutHidePending and not puzzleActive then SetLogoutShown(false) end
+        for btn, show in pairs(pendingSecureShown) do SetSecureShown(btn, show) end
         if pendingChallenge and not puzzleActive then
             local title = panel.pendingTitle or "Time's up!"
             pendingChallenge = false
